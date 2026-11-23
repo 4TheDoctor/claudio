@@ -1,0 +1,388 @@
+From 7226e9cd50287f5f9665a030edd9f409838ae085 Mon Sep 17 00:00:00 2001
+From: 4TheDoctor <62601652+4TheDoctor@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 03:00:37 +0100
+Subject: [PATCH 1/2] feat(patches): add claudio-tricolor prompt border
+
+Draw the prompt input's rules in the Italian flag's green, white and red,
+split by screen column, scrolling sideways while a turn runs and standing
+still otherwise. Two modules change: Ink's border painter paints flag runs
+for boxes whose style carries claudioPhase, and the prompt component routes
+its rule boxes through a wrapper that ticks that phase while isLoading.
+Bash mode and agent-coloured borders keep their own colour.
+
+Always on when named in --patches; used by Claudio's own patched copy.
+---
+ src/patches/claudioTricolor.test.ts | 143 +++++++++++++++++++++++
+ src/patches/claudioTricolor.ts      | 170 ++++++++++++++++++++++++++++
+ src/patches/index.ts                |  14 +++
+ 3 files changed, 327 insertions(+)
+ create mode 100644 src/patches/claudioTricolor.test.ts
+ create mode 100644 src/patches/claudioTricolor.ts
+
+diff --git a/src/patches/claudioTricolor.test.ts b/src/patches/claudioTricolor.test.ts
+new file mode 100644
+index 0000000..c316d88
+--- /dev/null
++++ b/src/patches/claudioTricolor.test.ts
+@@ -0,0 +1,143 @@
++import fs from 'node:fs';
++import path from 'node:path';
++import { afterEach, describe, it, expect } from 'vitest';
++
++import { writeClaudioTricolor, CLAUDIO_COLORS } from './claudioTricolor';
++import {
++  beginGraphContext,
++  endGraphContext,
++  enterGraphModule,
++  leaveGraphModule,
++} from './graphContext';
++import { applyPatchImplementationsToGraph } from './nativeGraphDispatcher';
++import { PatchGroup } from './index';
++
++// Shapes copied from Claude Code 2.1.330.
++const painter =
++  'function PM(h,v,T,M=0,O){v=o$e(v);let L=oe(v),F=h.length;return[h,v,""]}' +
++  'function fc(h,v,T){let M=Yot(h,v);if(T)M=Re.dim(M);return M}' +
++  'var LM=(h,v,T,M,O)=>{let L=wTo(T.style.borderStyle);if(L!==void 0){let F=Math.floor(T.yogaNode.getComputedWidth()),' +
++  'Y=T.style.borderTopColor??T.style.borderColor,te=T.style.borderTopDimColor??T.style.borderDimColor,' +
++  'ae=T.style.borderTop!==!1,ue=T.style.borderLeft!==!1,he=T.style.borderRight!==!1,ge=Math.max(0,F-(ue?1:0)-(he?1:0)),' +
++  'ce=ae?(ue?L.topLeft:"")+L.top.repeat(ge)+(he?L.topRight:""):"",me;if(ae&&T.style.borderText){let[Le,ze,Ae]=PM(ce,T.style.borderText.content,T.style.borderText.align,T.style.borderText.offset,L.top);me=fc(Le,Y,te)+ze+fc(Ae,Y,te)}else if(ae)me=fc(ce,Y,te);' +
++  'if(me)M.write(h,v,me)}},mc=LM;';
++
++const prompt =
++  'function Cmt(h){let Er=k(601),{ref:T,draft:L,transcript:V,scope:z,turn:se,chrome:je}=h,Fo=$e(L,K_),vn=$e(L,vP),is=Xe();' +
++  'let qb=jpt(vn,is),iF="",Lo=void 0,Xx=void 0;' +
++  'let Qu=iF!==""&&e(g,{...qb,borderBottom:!1,width:oe(iF)+6,borderText:kee(iF)});' +
++  'let JE=e(g,{...qb,borderBottom:!1,flexGrow:1,borderText:Lo});' +
++  'let T_=e(g,{...qb,borderBottom:!1,width:"100%",borderText:Xx?kee(Xx):void 0});' +
++  'return o(ae,{children:[Qu,JE,T_]})}';
++
++const react =
++  'var I=function(t){return s.H.useRef(t)},y=function(t){return s.H.useState(t)},H=function(t,e){return s.H.useEffect(t,e)},' +
++  'Wc=function(t,e,n){var r,i={},a=null;if(e!=null)for(r in e)i[r]=e[r];return{type:t,props:i}};export{I,y,H,Wc};';
++
++describe('claudioTricolor', () => {
++  afterEach(() => {
++    leaveGraphModule();
++    endGraphContext();
++  });
++
++  const inGraph = (name: string, modules: Record<string, string>) => {
++    beginGraphContext(new Map(Object.entries(modules)));
++    enterGraphModule(name);
++    return writeClaudioTricolor(modules[name]);
++  };
++
++  it('splits the top border into flag runs when the box asks for it', () => {
++    const result = writeClaudioTricolor(painter) as string;
++    expect(result).toContain('function __claudioTri(s,x,p,w)');
++    expect(result).toContain(JSON.stringify(CLAUDIO_COLORS));
++    expect(result).toContain('o+=Yot(r,C[c])');
++    expect(result).toContain(
++      'else if(ae)me=T.style.claudioPhase!==void 0?__claudioTri(ce,h,T.style.claudioPhase,M.width):fc(ce,Y,te);'
++    );
++    expect(result).toContain(
++      '__claudioTri(Ae,h+Le.length+oe(ze),T.style.claudioPhase,M.width)'
++    );
++    expect(() => new Function(result)).not.toThrow();
++  });
++
++  it('paints runs by screen column and shifts them with the phase', () => {
++    const painted = writeClaudioTricolor(painter) as string;
++    const helper = painted.slice(
++      painted.indexOf('function __claudioTri'),
++      painted.indexOf('var LM=')
++    );
++    const tri = new Function(
++      'Yot',
++      `${helper};return __claudioTri;`
++    )((s: string, c: string) => `[${c}:${s.length}]`) as (
++      s: string,
++      x: number,
++      p: number,
++      w: number
++    ) => string;
++    const line = '─'.repeat(9);
++    expect(tri(line, 0, 0, 9)).toBe(
++      `[${CLAUDIO_COLORS[0]}:3][${CLAUDIO_COLORS[1]}:3][${CLAUDIO_COLORS[2]}:3]`
++    );
++    expect(tri(line, 0, 3, 9)).toBe(
++      `[${CLAUDIO_COLORS[2]}:3][${CLAUDIO_COLORS[0]}:3][${CLAUDIO_COLORS[1]}:3]`
++    );
++  });
++
++  it('routes the prompt rule boxes through the ticking wrapper', () => {
++    const result = inGraph('/$bunfs/root/chunk-prompt.js', {
++      '/$bunfs/root/chunk-prompt.js': prompt,
++      '/$bunfs/root/chunk-react.js': react,
++    }) as string;
++    expect(
++      result.match(
++        /e\(__ClaudioRule,\{claudioTurn:se,claudioBox:g,\.\.\.qb,borderBottom:!1,/g
++      )
++    ).toHaveLength(3);
++    expect(result).toContain('l=$e(t,__claudioLoading)');
++    expect(result).toContain('b.borderColor==="promptBorder"');
++    expect(result).toContain('$tcc_React.useState(0)');
++    expect(result.indexOf('function __ClaudioRule(')).toBeLessThan(
++      result.indexOf('function Cmt(')
++    );
++  });
++
++  it('returns null for a module that has neither', () => {
++    expect(writeClaudioTricolor('function x(){return 1}')).toBeNull();
++  });
++
++  it('leaves an already patched module alone', () => {
++    const once = writeClaudioTricolor(painter) as string;
++    expect(writeClaudioTricolor(once)).toBe(once);
++  });
++
++  // The real 2.1.330 modules, when extracted next to the test run:
++  // CLAUDIO_MODULES=<dir with mod-ink.mjs, mod-prompt.mjs, mod-react.mjs>.
++  const dir = process.env.CLAUDIO_MODULES;
++  it.skipIf(!dir)('patches the real Ink and prompt modules', () => {
++    const read = (f: string) => fs.readFileSync(path.join(dir!, f), 'utf8');
++    const sources = new Map([
++      ['/$bunfs/root/chunk-ink.js', read('mod-ink.mjs')],
++      ['/$bunfs/root/chunk-prompt.js', read('mod-prompt.mjs')],
++      ['/$bunfs/root/chunk-react.js', read('mod-react.mjs')],
++    ]);
++    const { results } = applyPatchImplementationsToGraph(
++      sources,
++      { 'claudio-tricolor': { fn: writeClaudioTricolor, condition: true } },
++      [
++        {
++          id: 'claudio-tricolor',
++          name: 'Claudio tricolor prompt',
++          group: PatchGroup.MISC_CONFIGURABLE,
++          description: 'test',
++        },
++      ]
++    );
++    expect(results[0].details).toBe('Updated 2 module(s).');
++    for (const [name, source] of sources)
++      fs.writeFileSync(
++        path.join(dir!, `patched-${path.basename(name, '.js')}.mjs`),
++        source
++      );
++  });
++});
+diff --git a/src/patches/claudioTricolor.ts b/src/patches/claudioTricolor.ts
+new file mode 100644
+index 0000000..6924f38
+--- /dev/null
++++ b/src/patches/claudioTricolor.ts
+@@ -0,0 +1,170 @@
++// Please see the note about writing patches in ./index
++
++import { getReactVar } from './helpers';
++
++/**
++ * Claudio (the `claudio` launcher's own copy of Claude Code): the prompt
++ * input's top and bottom rules in the Italian flag's green, white and red.
++ * They scroll sideways while a turn runs and stand still otherwise.
++ *
++ * Two modules change. Each is recognised by its own code, so one patch id
++ * covers both and the result reads "Updated 2 module(s)":
++ *
++ * - Ink's border painter. A box whose style carries `claudioPhase` gets its
++ *   top border split into three runs by screen column (each a third of the
++ *   screen), shifted right by the phase. Every other box paints as before.
++ * - The prompt input. Its rule boxes (`{...border,borderBottom:!1,...}`
++ *   with a `borderText`) are drawn through a wrapper that adds
++ *   `claudioPhase` to their style: 0 while idle, the wall clock in ticks
++ *   while the turn's `isLoading` is true, re-rendered on every tick.
++ *
++ * The tick is what moves it: Ink copies a box from the previous frame unless
++ * its node is dirty, and a changed style is what marks it dirty. Bash mode
++ * and agent-coloured borders keep their own colour (the wrapper only acts on
++ * `borderColor:"promptBorder"`).
++ */
++
++export const CLAUDIO_COLORS = ['#009246', '#F1F2F1', '#CE2B37'] as const;
++export const CLAUDIO_TICK_MS = 110;
++const COLUMNS_PER_TICK = 2;
++
++const ID = '[$\\w]+';
++const esc = (name: string): string => name.replace(/\$/g, '\\$');
++
++/**
++ * Ink's `renderBorder`: the top border is built as one string and coloured
++ * once (`me=fc(ce,Y,te)`). Split it into flag-coloured runs instead when the
++ * box asks for it.
++ */
++const patchBorderPainter = (file: string): string | null => {
++  const head = file.match(
++    new RegExp(
++      `var (${ID})=\\((${ID}),(${ID}),(${ID}),(${ID}),(${ID})\\)=>\\{let (${ID})=${ID}\\(\\4\\.style\\.borderStyle\\);`
++    )
++  );
++  if (!head || head.index === undefined) return null;
++  const [, , x, , node, out, , chars] = head;
++  const n = esc(node);
++  const c = esc(chars);
++
++  const topRe = new RegExp(
++    `(${ID})=(${ID})\\?\\((${ID})\\?${c}\\.topLeft:""\\)\\+${c}\\.top\\.repeat\\((${ID})\\)\\+\\((${ID})\\?${c}\\.topRight:""\\):"",(${ID});` +
++      `if\\(\\2&&${n}\\.style\\.borderText\\)\\{let\\[(${ID}),(${ID}),(${ID})\\]=(${ID})\\(\\1,${n}\\.style\\.borderText\\.content,${n}\\.style\\.borderText\\.align,${n}\\.style\\.borderText\\.offset,${c}\\.top\\);` +
++      `\\6=(${ID})\\(\\7,(${ID}),(${ID})\\)\\+\\8\\+\\11\\(\\9,\\12,\\13\\)\\}else if\\(\\2\\)\\6=\\11\\(\\1,\\12,\\13\\);`
++  );
++  const rest = file.slice(head.index);
++  const top = rest.match(topRe);
++  if (!top || top.index === undefined || top.index > 4000) return null;
++  const [topText, ce, ae, , , , me, left, text, right, splitFn, paint, color, dim] =
++    top;
++
++  // The colorizer `paint` wraps (`function fc(h,v,T){let M=Yot(h,v);…`) and
++  // the string-width helper the borderText splitter uses (`let L=oe(v)`).
++  const colorize = file.match(
++    new RegExp(
++      `function ${esc(paint)}\\((${ID}),(${ID}),${ID}\\)\\{let ${ID}=(${ID})\\(\\1,\\2\\);`
++    )
++  )?.[3];
++  const width = file.match(
++    new RegExp(
++      `function ${esc(splitFn)}\\(${ID},(${ID}),${ID},${ID}=0,${ID}\\)\\{\\1=${ID}\\(\\1\\);let ${ID}=(${ID})\\(\\1\\)`
++    )
++  )?.[2];
++  if (!colorize || !width) return null;
++
++  const phase = `${node}.style.claudioPhase`;
++  const tri = (s: string, col: string) =>
++    `__claudioTri(${s},${col},${phase},${out}.width)`;
++  const oldSplit = `${me}=${paint}(${left},${color},${dim})+${text}+${paint}(${right},${color},${dim})}`;
++  const newSplit =
++    `${me}=${phase}!==void 0?${tri(left, x)}+${text}+${tri(right, `${x}+${left}.length+${width}(${text})`)}` +
++    `:${paint}(${left},${color},${dim})+${text}+${paint}(${right},${color},${dim})}`;
++  const oldPlain = `else if(${ae})${me}=${paint}(${ce},${color},${dim});`;
++  const newPlain = `else if(${ae})${me}=${phase}!==void 0?${tri(ce, x)}:${paint}(${ce},${color},${dim});`;
++  if (!topText.includes(oldSplit) || !topText.endsWith(oldPlain)) return null;
++  const newTop = topText.replace(oldSplit, newSplit).replace(oldPlain, newPlain);
++
++  const helper =
++    `function __claudioTri(s,x,p,w){if(!s)return s;w=w>0?w:80;x=Math.floor(x);` +
++    `var C=${JSON.stringify(CLAUDIO_COLORS)},o="",r="",c=-1,i,k,b;` +
++    `for(i=0;i<s.length;i++){k=((x+i-p)%w+w)%w;b=Math.min(2,Math.floor(k*3/w));` +
++    `if(b!==c){if(r)o+=${colorize}(r,C[c]);r="";c=b}r+=s[i]}` +
++    `if(r)o+=${colorize}(r,C[c]);return o}`;
++
++  const topAt = head.index + top.index;
++  return (
++    file.slice(0, head.index) +
++    helper +
++    file.slice(head.index, topAt) +
++    newTop +
++    file.slice(topAt + topText.length)
++  );
++};
++
++/**
++ * The prompt input component (`function Cmt(h){let Er=k(601),{ref,draft,
++ * transcript,scope,turn,…}=h,Fo=$e(L,K_),…`): route its rule boxes through
++ * `__ClaudioRule`, which ticks while the turn is loading.
++ */
++const patchPromptRules = (file: string): string | null => {
++  const comp = file.match(
++    new RegExp(
++      `function (${ID})\\((${ID})\\)\\{let ${ID}=${ID}\\(\\d+\\),\\{ref:${ID},draft:(${ID}),transcript:${ID},scope:${ID},turn:(${ID}),`
++    )
++  );
++  if (!comp || comp.index === undefined) return null;
++  const [, , props, draft, turn] = comp;
++  const body = file.slice(comp.index);
++
++  // The store hook the component reads its draft with (`Fo=$e(L,K_)`).
++  const store = body.match(
++    new RegExp(`\\}=${esc(props)},${ID}=(${ID})\\(${esc(draft)},`)
++  )?.[1];
++  if (!store) return null;
++
++  // Rule boxes: `e(g,{...qb,borderBottom:!1,…,borderText:…})`, all spreading
++  // the same border style. Keep the first group found inside the component.
++  const ruleRe = new RegExp(
++    `(${ID})\\((${ID}),\\{\\.\\.\\.(${ID}),borderBottom:!1,(?=[^}]*borderText:)`,
++    'g'
++  );
++  const rules = [...body.matchAll(ruleRe)].filter(m => (m.index ?? 0) < 80000);
++  if (rules.length === 0) return null;
++  const [, jsx, box, border] = rules[0];
++  const group = rules.filter(
++    m => m[1] === jsx && m[2] === box && m[3] === border
++  );
++  if (group.length < 2) return null;
++
++  const react = getReactVar(file);
++  if (!react) return null;
++
++  let patchedBody = body;
++  for (const m of [...group].reverse()) {
++    const at = m.index!;
++    const replacement = `${jsx}(__ClaudioRule,{claudioTurn:${turn},claudioBox:${box},...${border},borderBottom:!1,`;
++    patchedBody =
++      patchedBody.slice(0, at) +
++      replacement +
++      patchedBody.slice(at + m[0].length);
++  }
++
++  const wrapper =
++    `function __claudioLoading(s){return!!(s&&s.isLoading)}` +
++    `function __ClaudioRule(p){let{claudioTurn:t,claudioBox:B,...b}=p,l=${store}(t,__claudioLoading),[,f]=${react}.useState(0);` +
++    `${react}.useEffect(()=>{if(!l)return;let i=setInterval(()=>f((n)=>n+1),${CLAUDIO_TICK_MS});return()=>clearInterval(i)},[l]);` +
++    `return ${jsx}(B,b.borderColor==="promptBorder"?{...b,claudioPhase:l?Math.floor(Date.now()/${CLAUDIO_TICK_MS})*${COLUMNS_PER_TICK}:0}:b)}`;
++
++  return file.slice(0, comp.index) + wrapper + patchedBody;
++};
++
++export const writeClaudioTricolor = (oldFile: string): string | null => {
++  if (oldFile.includes('__claudioTri(') || oldFile.includes('__ClaudioRule('))
++    return oldFile;
++  // A module holds the painter, the prompt, or neither (then null: skipped).
++  const painted = patchBorderPainter(oldFile);
++  const file = painted ?? oldFile;
++  const ruled = patchPromptRules(file);
++  if (ruled) return ruled;
++  return painted;
++};
+diff --git a/src/patches/index.ts b/src/patches/index.ts
+index 22d418b..731290f 100644
+--- a/src/patches/index.ts
++++ b/src/patches/index.ts
+@@ -70,6 +70,7 @@ import { writeToolsets } from './toolsets';
+ import { writeTableFormat } from './tableFormat';
+ import { writeConversationTitle } from './conversationTitle';
+ import { writeHideStartupBanner } from './hideStartupBanner';
++import { writeClaudioTricolor } from './claudioTricolor';
+ import { writeHideCtrlGToEdit } from './hideCtrlGToEdit';
+ import { writeHideStartupClawd } from './hideStartupClawd';
+ import { writeIncreaseFileReadLimit } from './increaseFileReadLimit';
+@@ -368,6 +369,13 @@ const PATCH_DEFINITIONS = [
+     description:
+       'CC\'s startup banner with "Clawd" and release notes will be hidden',
+   },
++  {
++    id: 'claudio-tricolor',
++    name: 'Claudio tricolor prompt',
++    group: PatchGroup.MISC_CONFIGURABLE,
++    description:
++      "The prompt input's rules are drawn green, white and red, scrolling while Claude works",
++  },
+   {
+     id: 'hide-ctrl-g-to-edit',
+     name: 'Hide Ctrl+G to edit',
+@@ -904,6 +912,12 @@ export const buildPatchImplementations = (
+       fn: c => writeHideStartupBanner(c),
+       condition: !!config.settings.misc?.hideStartupBanner,
+     },
++    // Claudio's own copy only: ~/.claude/claudio/apply-banner.sh names it in
++    // --patches, which limits an apply to the listed ids.
++    'claudio-tricolor': {
++      fn: c => writeClaudioTricolor(c),
++      condition: true,
++    },
+     'hide-ctrl-g-to-edit': {
+       fn: c => writeHideCtrlGToEdit(c),
+       condition: !!config.settings.misc?.hideCtrlGToEdit,
+-- 
+2.56.1
+

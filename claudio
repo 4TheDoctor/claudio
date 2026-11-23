@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Claudio: Claude Code in Italian mode. Plain `claude` is untouched.
+# Runs the copy in bin/ if apply-banner.sh made one (stock startup banner off,
+# tricolor prompt, pinned header), otherwise the installed `claude`, with the
+# Claudio mod loaded either way.
+set -euo pipefail
+
+# This file is linked from ~/.local/bin, so follow the links to the project.
+self="${BASH_SOURCE[0]}"
+while [[ -L "$self" ]]; do
+  target="$(readlink "$self")"
+  [[ "$target" == /* ]] || target="$(dirname "$self")/$target"
+  self="$target"
+done
+CLAUDIO_HOME="$(cd "$(dirname "$self")" && pwd)"
+export CLAUDIO_HOME
+
+# Settings of this computer only, such as CLAUDIO_VOICES=1 (see README).
+if [[ -f "$CLAUDIO_HOME/local.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$CLAUDIO_HOME/local.env"
+  set +a
+fi
+
+if [[ -x "$CLAUDIO_HOME/bin/claude" ]]; then
+  run="$CLAUDIO_HOME/bin/claude"
+  # The copy is pinned to the build it was patched from. When `claude`
+  # updates, say so instead of silently running an old build.
+  current="$(readlink "$HOME/.local/bin/claude" 2>/dev/null || true)"
+  patched="$(cat "$CLAUDIO_HOME/bin/SOURCE" 2>/dev/null || true)"
+  if [[ -n "$current" && "$current" != "$patched" ]]; then
+    echo "claudio: Claude Code was updated. Run: $CLAUDIO_HOME/apply-banner.sh" >&2
+  fi
+  # The copy must not update itself; `claude` owns updates.
+  export DISABLE_AUTOUPDATER=1
+elif run="$(command -v claude)"; then
+  :
+else
+  echo "claudio: Claude Code is not installed. See https://code.claude.com/docs" >&2
+  exit 1
+fi
+
+# Espresso: the terminal's own background turns warm brown while Claudio
+# runs (OSC 11) and goes back to the terminal's own when it exits (OSC 111).
+printf '\e]11;#17110E\a'
+
+# Where status-feed.mjs leaves the session's figures for the header.
+CLAUDIO_RUN="$(mktemp -d "${TMPDIR:-/tmp}/claudio.XXXXXX")"
+export CLAUDIO_RUN
+trap 'printf "\e]111\a"; rm -rf "$CLAUDIO_RUN"' EXIT
+
+# settings.json picks the Claudio theme, turns verbose off so the mod's compact
+# rows draw, asks for the fullscreen layout, and sends the status line's
+# figures to the header (status-feed.mjs). All for this session only.
+"$run" --settings "$CLAUDIO_HOME/settings.json" --plugin-dir "$CLAUDIO_HOME/mod" "$@"

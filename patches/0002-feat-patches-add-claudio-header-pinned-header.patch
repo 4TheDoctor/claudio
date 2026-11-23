@@ -1,0 +1,282 @@
+From 29f821bbb3c8465a612dfd08bcba83f2e34783a3 Mon Sep 17 00:00:00 2001
+From: 4TheDoctor <62601652+4TheDoctor@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 08:18:10 +0100
+Subject: [PATCH 2/2] feat(patches): add claudio-header pinned header
+
+Fill the fullscreen layout's empty header slot with a Placed drawing of the
+Claudio mod, so its header stays above the transcript, and reserve the rows
+the mod draws. Two modules change: the REPL passes the header and its height,
+and the layout takes that height from the rest of the screen.
+
+Always on when named in --patches; used by Claudio's own patched copy.
+---
+ src/patches/claudioHeader.test.ts |  97 +++++++++++++++++++++++++
+ src/patches/claudioHeader.ts      | 114 ++++++++++++++++++++++++++++++
+ src/patches/index.ts              |  12 ++++
+ 3 files changed, 223 insertions(+)
+ create mode 100644 src/patches/claudioHeader.test.ts
+ create mode 100644 src/patches/claudioHeader.ts
+
+diff --git a/src/patches/claudioHeader.test.ts b/src/patches/claudioHeader.test.ts
+new file mode 100644
+index 0000000..48cfd3d
+--- /dev/null
++++ b/src/patches/claudioHeader.test.ts
+@@ -0,0 +1,97 @@
++import fs from 'node:fs';
++import path from 'node:path';
++import { describe, it, expect } from 'vitest';
++
++import {
++  writeClaudioHeader,
++  CLAUDIO_HEADER_ROWS,
++  CLAUDIO_HEADER_REQUEST_ID,
++} from './claudioHeader';
++import { applyPatchImplementationsToGraph } from './nativeGraphDispatcher';
++import { PatchGroup } from './index';
++
++// Shapes copied from Claude Code 2.1.330.
++const layout =
++  'function jbn(m){let le=k(155),{scrollable:h,sidebar:w,sidebarWidth:T,dock:x,dockWidth:_,dockTail:C,top:L,header:W,abovePrompt:j,bottom:V}=m,' +
++  'ze=T===void 0?0:T,ce=qe(),{rows:pe,columns:Qe}=ce,Ht=W!=null&&pe>=n7n,Ee=pe-(Ht?w2s:0),st;' +
++  'let Fo=W!=null&&e(g,{flexShrink:0,width:"100%",children:W});return o(Di,{children:[Fo,h,V]})}';
++
++const repl =
++  'import{uu}from"/$bunfs/root/chunk-t7wkkwx8.js";' +
++  'function nP(h){let V=k(5);const je=uu.useRenderInput("SessionMode",z,se);return uu.useRenderHook(je,Ge)}' +
++  'function Ux(h){let Ln=k(800),_L;' +
++  '_L=e(jbn,{scrollViewport:vl.viewport,modal:bv,modalScrollViewport:vl.modalViewport,unseen:vl,hidePill:BS,askBelow:mc,' +
++  'hideSticky:qu.isTeammate,isDialogAbovePrompt:vv,onLinkNotOpened:US,header:void 0,top:null,sidebar:lq,sidebarWidth:LS,' +
++  'dock:_v,dockWidth:_w,dockTail:xx,transcriptOverlay:DE,scrollable:NE,abovePrompt:xw,bottom:CL});return _L}\n' +
++  'export{Ux,nP};';
++
++describe('claudioHeader', () => {
++  it('reserves the rows the REPL asks for in the layout', () => {
++    const result = writeClaudioHeader(layout) as string;
++    expect(result).toContain(
++      'Ht=W!=null&&pe>=n7n,Ee=pe-(Ht?(m.claudioHeaderRows??w2s):0),st;'
++    );
++    expect(() => new Function(result)).not.toThrow();
++  });
++
++  it('fills the REPL header slot with the mod-drawn header', () => {
++    const result = writeClaudioHeader(repl) as string;
++    expect(result).toContain(
++      `header:e(__ClaudioHeader,{}),claudioHeaderRows:${CLAUDIO_HEADER_ROWS},top:null,sidebar:lq,`
++    );
++    expect(result).toContain(
++      `requestId:"${CLAUDIO_HEADER_REQUEST_ID}",props:{id:"header",plugin:"claudio"}`
++    );
++    expect(result).toContain(
++      'uu.useRenderHook(uu.useRenderInput("Placed",__claudioHeaderInput,[]),__claudioHeaderNone)'
++    );
++    // Helpers at module scope, before the closing export.
++    expect(result.indexOf('function __ClaudioHeader(')).toBeLessThan(
++      result.lastIndexOf('export{')
++    );
++    expect(result.indexOf('function __ClaudioHeader(')).toBeGreaterThan(
++      result.indexOf('return _L}')
++    );
++  });
++
++  it('returns null for a module that has neither', () => {
++    expect(writeClaudioHeader('function x(){return 1}')).toBeNull();
++  });
++
++  it('leaves an already patched module alone', () => {
++    const once = writeClaudioHeader(repl) as string;
++    expect(writeClaudioHeader(once)).toBe(once);
++    const laid = writeClaudioHeader(layout) as string;
++    expect(writeClaudioHeader(laid)).toBe(laid);
++  });
++
++  // The real 2.1.330 modules, when extracted next to the test run:
++  // CLAUDIO_HEADER_MODULES=<dir with mod-layout.mjs and mod-repl.mjs>.
++  const dir = process.env.CLAUDIO_HEADER_MODULES;
++  it.skipIf(!dir)('patches the real layout and REPL modules', () => {
++    const read = (f: string) => fs.readFileSync(path.join(dir!, f), 'latin1');
++    const sources = new Map([
++      ['/$bunfs/root/chunk-layout.js', read('mod-layout.mjs')],
++      ['/$bunfs/root/chunk-repl.js', read('mod-repl.mjs')],
++    ]);
++    const { results } = applyPatchImplementationsToGraph(
++      sources,
++      { 'claudio-header': { fn: writeClaudioHeader, condition: true } },
++      [
++        {
++          id: 'claudio-header',
++          name: 'Claudio pinned header',
++          group: PatchGroup.MISC_CONFIGURABLE,
++          description: 'test',
++        },
++      ]
++    );
++    expect(results[0].details).toBe('Updated 2 module(s).');
++    for (const [name, source] of sources)
++      fs.writeFileSync(
++        path.join(dir!, `patched-${path.basename(name, '.js')}.mjs`),
++        source,
++        'latin1'
++      );
++  });
++});
+diff --git a/src/patches/claudioHeader.ts b/src/patches/claudioHeader.ts
+new file mode 100644
+index 0000000..5792f8c
+--- /dev/null
++++ b/src/patches/claudioHeader.ts
+@@ -0,0 +1,114 @@
++// Please see the note about writing patches in ./index
++
++/**
++ * Claudio (the `claudio` launcher's own copy of Claude Code): a header pinned
++ * above the transcript in the fullscreen layout, drawn by the Claudio mod.
++ *
++ * The fullscreen layout already has a header slot: a full-width row above the
++ * transcript, the dock and the prompt, which never scrolls, shown from 15
++ * terminal rows. The REPL leaves it empty (`header:void 0`). Two modules
++ * change, each recognised by its own code, so the result reads "Updated 2
++ * module(s)":
++ *
++ * - The REPL fills the slot with `__ClaudioHeader`, which asks the plugins'
++ *   `ui.render` hooks for a `Placed` drawing (plugin "claudio", id "header",
++ *   requestId "claudio-header") the way a `$.ui.place` row is asked. The mod's
++ *   hook draws it; with no answer the slot stays blank.
++ * - The layout takes the slot's rows from what the rest of the screen gets.
++ *   Stock takes 2; the REPL now passes `claudioHeaderRows`, the height the mod
++ *   draws (CLAUDIO_HEADER_ROWS), so the transcript and the prompt are sized to
++ *   the rows really left.
++ */
++
++export const CLAUDIO_HEADER_ROWS = 5;
++export const CLAUDIO_HEADER_REQUEST_ID = 'claudio-header';
++
++const ID = '[$\\w]+';
++const esc = (name: string): string => name.replace(/\$/g, '\\$');
++
++/**
++ * The fullscreen layout (`function jbn(m){let le=k(155),{scrollable,…,
++ * header:W,…}=m,…,Ht=W!=null&&pe>=n7n,Ee=pe-(Ht?w2s:0)`): reserve the rows
++ * the REPL asks for instead of the stock 2.
++ */
++const patchLayout = (file: string): string | null => {
++  const head = file.match(
++    new RegExp(
++      `function ${ID}\\((${ID})\\)\\{let ${ID}=${ID}\\(\\d+\\),\\{scrollable:${ID},[^}]*?header:(${ID}),[^}]*\\}=\\1,`
++    )
++  );
++  if (!head || head.index === undefined) return null;
++  const [, props, header] = head;
++
++  const reserve = file
++    .slice(head.index)
++    .match(
++      new RegExp(
++        `(${ID})=${esc(header)}!=null&&(${ID})>=(${ID}),(${ID})=\\2-\\(\\1\\?(${ID}):0\\)`
++      )
++    );
++  if (!reserve || reserve.index === undefined || reserve.index > 3000)
++    return null;
++  const [text, shown, rows, min, left, stock] = reserve;
++
++  const at = head.index + reserve.index;
++  const replacement =
++    `${shown}=${header}!=null&&${rows}>=${min},` +
++    `${left}=${rows}-(${shown}?(${props}.claudioHeaderRows??${stock}):0)`;
++  return file.slice(0, at) + replacement + file.slice(at + text.length);
++};
++
++/**
++ * The REPL's fullscreen branch (`e(jbn,{scrollViewport:…,header:void 0,
++ * top:null,…})`): put the mod-drawn header in the slot.
++ */
++const patchRepl = (file: string): string | null => {
++  const call = file.match(
++    new RegExp(
++      `(${ID})\\(${ID},\\{scrollViewport:[^{}]*?header:void 0,top:null,`
++    )
++  );
++  if (!call || call.index === undefined) return null;
++  const jsx = call[1];
++
++  // The render-hook helpers the module draws plugin sites with
++  // (`uu.useRenderHook(uu.useRenderInput("SessionMode",…),…)`).
++  const hooks = file.match(new RegExp(`(${ID})\\.useRenderHook\\(`))?.[1];
++  if (!hooks || !file.includes(`${hooks}.useRenderInput(`)) return null;
++
++  // Module scope, so the helpers sit before the closing export.
++  const exportAt = file.lastIndexOf('export{');
++  if (exportAt < call.index) return null;
++
++  const newCall = call[0].replace(
++    'header:void 0,top:null,',
++    `header:${jsx}(__ClaudioHeader,{}),claudioHeaderRows:${CLAUDIO_HEADER_ROWS},top:null,`
++  );
++  const helper =
++    `function __claudioHeaderInput(){return{requestId:"${CLAUDIO_HEADER_REQUEST_ID}",props:{id:"header",plugin:"claudio"}}}` +
++    `function __claudioHeaderNone(){return null}` +
++    `function __ClaudioHeader(){return ${hooks}.useRenderHook(${hooks}.useRenderInput("Placed",__claudioHeaderInput,[]),__claudioHeaderNone)}`;
++
++  const callEnd = call.index + call[0].length;
++  return (
++    file.slice(0, call.index) +
++    newCall +
++    file.slice(callEnd, exportAt) +
++    helper +
++    file.slice(exportAt)
++  );
++};
++
++export const writeClaudioHeader = (oldFile: string): string | null => {
++  if (
++    oldFile.includes('__ClaudioHeader(') ||
++    oldFile.includes('.claudioHeaderRows??')
++  )
++    return oldFile;
++  // A module holds the layout, the REPL, or neither (then null: skipped).
++  const laid = patchLayout(oldFile);
++  const file = laid ?? oldFile;
++  const filled = patchRepl(file);
++  if (filled) return filled;
++  return laid;
++};
+diff --git a/src/patches/index.ts b/src/patches/index.ts
+index 731290f..4484838 100644
+--- a/src/patches/index.ts
++++ b/src/patches/index.ts
+@@ -71,6 +71,7 @@ import { writeTableFormat } from './tableFormat';
+ import { writeConversationTitle } from './conversationTitle';
+ import { writeHideStartupBanner } from './hideStartupBanner';
+ import { writeClaudioTricolor } from './claudioTricolor';
++import { writeClaudioHeader } from './claudioHeader';
+ import { writeHideCtrlGToEdit } from './hideCtrlGToEdit';
+ import { writeHideStartupClawd } from './hideStartupClawd';
+ import { writeIncreaseFileReadLimit } from './increaseFileReadLimit';
+@@ -376,6 +377,13 @@ const PATCH_DEFINITIONS = [
+     description:
+       "The prompt input's rules are drawn green, white and red, scrolling while Claude works",
+   },
++  {
++    id: 'claudio-header',
++    name: 'Claudio pinned header',
++    group: PatchGroup.MISC_CONFIGURABLE,
++    description:
++      "In fullscreen, the Claudio mod's header stays pinned above the transcript",
++  },
+   {
+     id: 'hide-ctrl-g-to-edit',
+     name: 'Hide Ctrl+G to edit',
+@@ -918,6 +926,10 @@ export const buildPatchImplementations = (
+       fn: c => writeClaudioTricolor(c),
+       condition: true,
+     },
++    'claudio-header': {
++      fn: c => writeClaudioHeader(c),
++      condition: true,
++    },
+     'hide-ctrl-g-to-edit': {
+       fn: c => writeHideCtrlGToEdit(c),
+       condition: !!config.settings.misc?.hideCtrlGToEdit,
+-- 
+2.56.1
+

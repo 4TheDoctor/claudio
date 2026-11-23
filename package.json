@@ -1,0 +1,28 @@
+{
+  "name": "claudio-for-claude-code",
+  "version": "0.1.0",
+  "description": "Claudio: an unofficial Italian mode for Claude Code, with an animated pizzaiolo crab",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "bin": { "claudio-install": "cli.mjs" },
+  "engines": { "node": ">=20" },
+  "os": ["darwin", "linux"],
+  "files": [
+    "apply-banner.sh",
+    "claudio",
+    "cli.mjs",
+    "install",
+    "LICENSE",
+    "mod/.claude-plugin/plugin.json",
+    "mod/art/crab",
+    "mod/art/crab.png",
+    "mod/hooks",
+    "mod/tsconfig.json",
+    "patches",
+    "README.md",
+    "settings.json",
+    "status-feed.mjs",
+    "tools/build-crab-frames.py"
+  ]
+}

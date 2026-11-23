@@ -1,0 +1,9 @@
+{
+  "theme": "custom:claudio",
+  "tui": "fullscreen",
+  "verbose": false,
+  "statusLine": {
+    "type": "command",
+    "command": "node \"${CLAUDIO_HOME:-$HOME/.claude/claudio}/status-feed.mjs\""
+  }
+}
