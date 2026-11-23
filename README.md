@@ -51,8 +51,9 @@ After a Claude Code update, run the install line again and say yes.
 ## Make it yours
 
 - **The crab.** Each folder in `mod/art/crab` is one act: frames named `00.png`,
-  `01.png`, and so on. `gesture@170` holds each frame 170 ms. Acts take turns,
-  about four seconds each. `tools/build-crab-frames.py` makes them from a GIF or
+  `01.png`, and so on. `gesture@170` holds each frame 170 ms. Acts take turns
+  while Claude works, about four seconds each; the one named `idle` plays now
+  and then between turns, and its first frame is the pose he stands in. `tools/build-crab-frames.py` makes them from a GIF or
   a folder of PNGs. An update replaces `mod`, so keep your own acts elsewhere.
 - **The voices.** If you use VoiceMode and have voices named `claudio-festa`,
   `claudio-tragedia`, `claudio-chiacchiera` and `claudio-racconto`, put

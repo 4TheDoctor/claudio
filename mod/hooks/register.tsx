@@ -1,4 +1,4 @@
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import { gaugeOf, INK, modelPieces, parseStatus, pathPieces, type Status, tilesOf, tilesThatFit } from './status'
 
@@ -23,12 +23,14 @@ const CRAB = { columns: 13, rows: 5 } as const
 // The crab's acts are folders of frames, art/crab/<act>/00.png, 01.png…
 // (tools/build-crab-frames.py makes them). An act named "spin@250" holds each
 // frame 250 ms. While a turn runs he plays one act after another, each for
-// about CRAB_ACT_MS; idle, he stands on the first act's frame 00. With no
-// acts, art/crab.png is drawn still.
+// about CRAB_ACT_MS. The act named "idle" is the other way round: between turns
+// he stands on its frame 00 and plays it once every CRAB_REST_MS. Without it he
+// stands on the first act's frame 00. With no acts, art/crab.png is drawn.
 const CRAB_KEY = 'crab'
 const CRAB_DIR = 'art/crab'
 const CRAB_FRAME_MS = 130
 const CRAB_ACT_MS = 4000
+const CRAB_REST_MS = 6000
 const CRAB_STILL = 'art/crab.png'
 
 // Beside the crab: the name block, then one tile per figure. The figures come
@@ -48,6 +50,8 @@ const actOf = (name: string, files: readonly string[]): Act => {
   const frameMs = Number(name.match(/@(\d+)$/)?.[1] ?? CRAB_FRAME_MS) || CRAB_FRAME_MS
   return { frames, frameMs, loops: Math.max(1, Math.round(CRAB_ACT_MS / (frameMs * Math.max(1, frames.length)))) }
 }
+
+const isIdle = (name: string): boolean => name === 'idle' || name.startsWith('idle@')
 
 const FLAG = { green: '#009246', white: '#f1f2f1', red: '#ce2b37' } as const
 const AMBER = '#e0a030'
@@ -144,6 +148,74 @@ The spoken line follows CLAUDE.md otherwise: one or two short sentences, Spanish
 
 type Header = { version: string; model: string; cwd: string }
 
+type Crab = {
+  acts: readonly Act[]
+  idle: Act | null
+  isWorking: boolean
+  act: number
+  // Frames shown in this act so far, counting every loop.
+  step: number
+  // Where he is drawn: the pinned header, or else the placed row.
+  site: string
+  timer: { cancel: () => void } | null
+}
+
+const crabAct = (crab: Crab): Act | undefined =>
+  crab.isWorking ? crab.acts[crab.act] : (crab.idle ?? crab.acts[0])
+
+const crabFile = (crab: Crab): string => {
+  const frames = crabAct(crab)?.frames ?? []
+  return frames[crab.step % Math.max(1, frames.length)] ?? CRAB_STILL
+}
+
+// The next frame. At work, another act once this one has played its loops; at
+// rest, back to standing after one go.
+const crabMoves = (crab: Crab): void => {
+  const current = crabAct(crab)
+  crab.step += 1
+  if (current === undefined) {
+    return
+  }
+  if (crab.step >= current.frames.length * (crab.isWorking ? current.loops : 1)) {
+    crab.step = 0
+    crab.act = crab.isWorking ? (crab.act + 1) % crab.acts.length : crab.act
+  }
+}
+
+// Shows his current frame. A header that is not on screen refuses the swap,
+// which is fine.
+const crabShows = ($: EngineInterface, crab: Crab): void => {
+  void $.ui
+    .blit({
+      requestId: crab.site,
+      key: CRAB_KEY,
+      source: { file: `${$.plugin.root}/${crabFile(crab)}`, format: 'png' },
+    })
+    .catch(() => undefined)
+}
+
+// Keeps him moving until the next call, which starts him over from standing.
+const crabPlays = ($: EngineInterface, crab: Crab): void => {
+  crab.timer?.cancel()
+  crab.timer = null
+  const current = crabAct(crab)
+  const canMove = crab.isWorking ? crab.acts.some(one => one.frames.length > 1) : (crab.idle?.frames.length ?? 0) > 1
+  if (current === undefined || !canMove) {
+    return
+  }
+  const isResting = !crab.isWorking && crab.step === 0
+  const timer = $.clock.after(isResting ? CRAB_REST_MS : current.frameMs, () => {
+    // A newer call took over while this tick was already on its way.
+    if (crab.timer !== timer) {
+      return
+    }
+    crabMoves(crab)
+    crabShows($, crab)
+    crabPlays($, crab)
+  })
+  crab.timer = timer
+}
+
 const pick = <T,>(list: readonly T[], seed: string): T => {
   let hash = 0
   for (const char of seed) {
@@ -205,36 +277,18 @@ export const register: Register = on => {
   // Whether the pinned header was asked for; if not, the header becomes a row.
   let isPlaced = false
   let isPinned = false
-  // Where the crab is drawn: the pinned header, or else the placed row.
-  let crabSite = PINNED_REQUEST_ID
 
   let status: Status | null = null
   let statusText = ''
 
-  let acts: readonly Act[] = []
-  let act = 0
-  // Frames shown in this act so far, counting every loop.
-  let step = 0
-  let crabTimer: { cancel: () => void } | null = null
-
-  const crabFile = (): string => {
-    const frames = acts[act]?.frames ?? []
-    return frames[step % Math.max(1, frames.length)] ?? CRAB_STILL
-  }
-
-  const crabStands = () => {
-    act = 0
-    step = 0
-  }
-
-  // The next frame, moving on to another act once this one has played its loops.
-  const crabMoves = () => {
-    const current = acts[act]
-    step += 1
-    if (current !== undefined && step >= current.frames.length * current.loops) {
-      step = 0
-      act = (act + 1) % acts.length
-    }
+  const crab: Crab = {
+    acts: [],
+    idle: null,
+    isWorking: false,
+    act: 0,
+    step: 0,
+    site: PINNED_REQUEST_ID,
+    timer: null,
   }
 
   // True once, when the header should become a placed transcript row.
@@ -265,11 +319,13 @@ export const register: Register = on => {
     const listed = await Promise.all(
       names.map(async name => {
         const files = await $.fs.list(`${$.plugin.root}/${CRAB_DIR}/${name}`).catch(() => [])
-        return actOf(name, files.map(file => file.name))
+        return { name, act: actOf(name, files.map(file => file.name)) }
       }),
     )
-    acts = listed.filter(one => one.frames.length > 0)
-    crabStands()
+    const drawn = listed.filter(one => one.act.frames.length > 0)
+    crab.acts = drawn.filter(one => !isIdle(one.name)).map(one => one.act)
+    crab.idle = drawn.find(one => isIdle(one.name))?.act ?? null
+    crabPlays($, crab)
     const cwd = home && e.cwd.startsWith(home) ? `~${e.cwd.slice(home.length)}` : e.cwd
     header = { version: version.base ?? version.version, model: displayModel(model), cwd }
 
@@ -296,44 +352,23 @@ export const register: Register = on => {
     return result
   })
 
-  // The crab moves while the main loop works. A swap aimed at a header that is
-  // not on screen is refused, which is fine.
+  // The crab works while the main loop does.
   on('turn.start', ($, e, next) => {
-    if (e.agentId === undefined && crabTimer === null && acts.some(one => one.frames.length > 1)) {
-      const play = () => {
-        crabTimer = $.clock.after(acts[act]?.frameMs ?? CRAB_FRAME_MS, () => {
-          // The turn ended while this tick was already on its way.
-          if (crabTimer === null) {
-            return
-          }
-          crabMoves()
-          void $.ui
-            .blit({
-              requestId: crabSite,
-              key: CRAB_KEY,
-              source: { file: `${$.plugin.root}/${crabFile()}`, format: 'png' },
-            })
-            .catch(() => undefined)
-          play()
-        })
-      }
-      play()
+    if (e.agentId === undefined && !crab.isWorking) {
+      crab.isWorking = true
+      crab.act = 0
+      crab.step = 0
+      crabPlays($, crab)
     }
     return next(e)
   })
 
-  on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined && crabTimer !== null) {
-      crabTimer.cancel()
-      crabTimer = null
-      crabStands()
-      await $.ui
-        .blit({
-          requestId: crabSite,
-          key: CRAB_KEY,
-          source: { file: `${$.plugin.root}/${crabFile()}`, format: 'png' },
-        })
-        .catch(() => undefined)
+  on('turn.complete', ($, e, next) => {
+    if (e.agentId === undefined && crab.isWorking) {
+      crab.isWorking = false
+      crab.step = 0
+      crabShows($, crab)
+      crabPlays($, crab)
     }
     return next(e)
   })
@@ -352,7 +387,7 @@ export const register: Register = on => {
       return next(e)
     }
     isPinned = isPinned || e.requestId === PINNED_REQUEST_ID
-    crabSite = isPinned ? PINNED_REQUEST_ID : e.requestId
+    crab.site = isPinned ? PINNED_REQUEST_ID : e.requestId
     if (header === null) {
       return next(e)
     }
@@ -427,7 +462,7 @@ export const register: Register = on => {
       <Box flexDirection="row" height={HEADER_ROWS} overflow="hidden" marginY={isBar ? 0 : 1}>
         <Image
           key={CRAB_KEY}
-          source={{ file: `${$.plugin.root}/${crabFile()}`, format: 'png' }}
+          source={{ file: `${$.plugin.root}/${crabFile(crab)}`, format: 'png' }}
           columns={CRAB.columns}
           rows={CRAB.rows}
           alt="Claudio"

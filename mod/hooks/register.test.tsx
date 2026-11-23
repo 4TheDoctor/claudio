@@ -251,3 +251,36 @@ test('the crab moves in the row too, where nothing is pinned', async ($, on) => 
   await $.turn.complete(done)
   await ui.unmount()
 })
+
+const WITH_IDLE = { ...ACTS, 'idle@100': ['00.png', '01.png', '02.png'] } as const
+
+test('between turns he stands, and plays the idle act once now and then', async ($, on) => {
+  const clock = mock.clock(on)
+  const swapped = engine(on, WITH_IDLE)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(5900)
+  expect(swapped).toEqual([])
+  await clock.advance(100 + 200)
+  expect(swapped).toEqual(['idle@100/01.png', 'idle@100/02.png', 'idle@100/00.png'])
+  await clock.advance(5900)
+  expect(swapped.length).toBe(3)
+  await clock.advance(100)
+  expect(swapped.at(-1)).toBe('idle@100/01.png')
+})
+
+test('at work the idle act is left out, and after it he goes back to standing', async ($, on) => {
+  const clock = mock.clock(on)
+  const swapped = engine(on, WITH_IDLE)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(6050) // in the middle of the idle act
+  await $.turn.start(turn)
+  swapped.length = 0
+  await clock.advance(20000)
+  expect(swapped.some(one => one.startsWith('idle'))).toBe(false)
+  expect(swapped.some(one => one.startsWith('b/'))).toBe(true)
+  await $.turn.complete(done)
+  expect(swapped.at(-1)).toBe('idle@100/00.png')
+  const count = swapped.length
+  await clock.advance(5900)
+  expect(swapped.length).toBe(count)
+})
